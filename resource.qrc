@@ -1,0 +1,13 @@
+<RCC>
+    <qresource prefix="/icon">
+        <file>icon/add.png</file>
+        <file>icon/load.png</file>
+        <file>icon/record.png</file>
+        <file>icon/remove.png</file>
+        <file>icon/save.jpg</file>
+        <file>icon/start.png</file>
+        <file>icon/new.png</file>
+        <file>icon/lock.png</file>
+        <file>icon/create.png</file>
+    </qresource>
+</RCC>

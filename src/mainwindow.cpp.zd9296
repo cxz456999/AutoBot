@@ -1,0 +1,641 @@
+#include "header/mainwindow.h"
+#include "header/huffman.h"
+#include "ui_mainwindow.h"
+#include "header/questdialog.h"
+#include "header/global.h"
+#include <windows.h>
+#include<QMessageBox>
+#include <QFileDialog>
+#include <QInputDialog>
+#include <QLineEdit>
+#include <qDebug>
+#include <QKeyEvent>
+#include <QDesktopServices>
+#include<QNetworkRequest>
+#include <QNetworkReply>
+#include <QUrlQuery>
+#include <QNetworkInterface>
+
+GlobalV Global;
+
+
+
+MainWindow::MainWindow(QWidget *parent) :
+    QMainWindow(parent),
+    ui(new Ui::MainWindow)
+{
+    ui->setupUi(this);
+    m_login.exec();
+
+    m_autoBot = new AutoBot(ui->textEdit);
+    if ( !m_autoBot->readVirtualKeyTable() )
+        QMessageBox::information(this, tr("無法開啟"),
+            "autoBot.key");
+
+    QStringList headers;
+    headers << "Action";
+    QStringList datas;
+    datas << "重複做...次(圈選)" << "定時(圈選!勿包在重複做裡!)" << "條件啟動(圈選!勿包在重複做裡!)" << "延遲...毫秒" << "按鍵(字母、數字)" << "滑鼠";
+    this->m_treeModel = new TreeModel(headers, datas );
+    ui->toolView->setModel(this->m_treeModel);
+
+    QStringList headers_vKey;
+    headers_vKey << "Name" << "Delete";
+    this->m_vKeyModel = new TreeModel(headers, m_autoBot->getAllVirtualKeys() );
+    ui->vKeyView->setModel(this->m_vKeyModel);
+
+
+
+    ui->saveButton->setToolTip("存檔腳本檔案");
+    connect(m_autoBot, SIGNAL(finished()), this, SLOT(endBot()));
+}
+
+MainWindow::~MainWindow()
+{
+    delete ui;
+}
+
+void MainWindow::replyFinished(QNetworkReply *reply)
+{
+    qDebug() << reply->readAll();
+    m_successLogout = true;
+}
+
+
+bool* isEnd = NULL;
+DWORD WINAPI ThreadEnd(LPVOID pM)
+{
+
+    while ( !*isEnd )
+         Sleep(100);
+     exit(0);
+    return 0;
+}
+
+void MainWindow::closeEvent( QCloseEvent *event) {
+    QMessageBox::StandardButton button;
+    button = QMessageBox::question(this, tr("退出"), QString(tr("請問是否要離開腳本製作")), QMessageBox::Yes | QMessageBox::No);
+    if ( button == QMessageBox::No) {
+        event->ignore();
+    }
+    else if ( button == QMessageBox::Yes) {
+        QNetworkAccessManager* manager = new QNetworkAccessManager();
+        connect(manager, SIGNAL(finished(QNetworkReply*)),
+                 this, SLOT(replyFinished(QNetworkReply*)));
+
+        QNetworkRequest request(QUrl("http://tw-gtitw.rhcloud.com/AutoBot/login.jsp"));
+
+        QUrlQuery params;
+        qDebug() << m_login.m_user << m_login.m_passwd << m_login.m_mac;
+        params.addQueryItem("lostatus", "logout" );
+        params.addQueryItem("lousername", m_login.m_user);
+        params.addQueryItem("lopassword", m_login.m_passwd);
+        params.addQueryItem("lomac", m_login.m_mac);
+        QByteArray data;
+        data.append(params.toString());
+        request.setHeader(QNetworkRequest::ContentTypeHeader, QVariant("application/x-www-form-urlencoded"));
+        manager->post(request, data);
+        isEnd = &m_successLogout;
+        CreateThread(NULL, 0, ThreadEnd, NULL, 0, NULL);
+        QMessageBox::information(this, tr("！！！"),
+            "儲存設定,請等待．．．");
+        event->ignore();
+
+       // event->accept();
+    }
+    event->ignore();
+
+}
+
+void MainWindow::endBot()
+{
+    Beep( 700, 1000);
+    QString mess = QString::fromUtf8("腳本結束") ;
+    QMessageBox::information(this, tr("Success"), mess) ;
+    this->ui->startButton->setEnabled(true);
+    this->ui->loadButton->setEnabled(true);
+    this->ui->saveButton->setEnabled(true);
+    this->ui->newButton->setEnabled(true);
+    this->ui->lockButton->setEnabled(true);
+
+}
+
+void MainWindow::on_saveButton_clicked()
+{
+    QString fileName = QFileDialog::getSaveFileName(this,
+           tr("儲存腳本"), "",
+           tr("腳本 (*.bot);"));
+    if (fileName.isEmpty())
+        return;
+
+    QFile file(fileName);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        QMessageBox::information(this, tr("無法儲存檔案"),
+            file.errorString());
+        return;
+    } // if
+
+    m_currentFileName = fileName;
+    m_autoBot->saveData(&file);
+    //file.open(QIODevice::ReadOnly);
+    //m_autoBot->readData(&file);
+    file.close();
+}
+
+void MainWindow::on_loadButton_clicked()
+{
+    deselectedAllText();
+    QString fileName = QFileDialog::getOpenFileName(this,
+                       tr("開啟腳本"), "",
+                       tr("腳本 (*.bot); 加密腳本 (*.botx)"));//;All Files (*)
+    if (fileName.isEmpty()) return;
+
+    QFile file(fileName);
+    m_currentFileName = fileName;
+    if (!file.open(QIODevice::ReadOnly)) {
+                QMessageBox::information(this, tr("無法開啟檔案"),
+                    file.errorString());
+                return ;
+    } // if
+
+    if ( !Huffman_Management::isCompressingFile(fileName) )
+    {
+        QString content = m_autoBot->readData(&file);
+         ui->textEdit->setEnabled(true);
+        ui->textEdit->setText( content );
+    } // if
+    else
+    {
+        m_isCompressFile = true;
+        ui->textEdit->setText( "這是加密腳本,不給看~" );
+        ui->textEdit->setEnabled(false);
+
+    } // else
+}
+
+void MainWindow::on_toolView_clicked(const QModelIndex &index)
+{
+    bool isOK;
+    QString strSelect = index.model()->index(index.row(), 0).data().toString();
+    if ( strSelect.compare( "重複做...次(圈選)" ) == 0 ) // 延遲...毫秒
+    {
+        QTextCursor cursor(ui->textEdit->textCursor());
+        QString selectedTxt =  cursor.selectedText();
+        if ( selectedTxt.size() <= 0 ) {
+            QMessageBox::critical(this, tr("Error"),
+                "請圈選指令");
+            return;
+        } // if
+
+        int text = QInputDialog::getInt(this, "輸入",
+                                        "輸入重複的次數:(-1 無限次)", QLineEdit::Normal, -1, 2147400000, 1, &isOK);
+        if ( !isOK ) return;
+        QString changedTxt = "loop ( " + QString::number(text) + " ) {\n" + selectedTxt + "\n}";
+        ui->textEdit->textCursor().insertText(changedTxt);
+        //qDebug() <<
+    } // if
+    else if ( strSelect.compare( "定時(圈選!勿包在重複做裡!)" ) == 0 )
+    {
+        QTextCursor cursor(ui->textEdit->textCursor());
+        QString selectedTxt =  cursor.selectedText();
+        if ( selectedTxt.size() <= 0 ) {
+            QMessageBox::critical(this, tr("Error"),
+                "請圈選指令");
+            return;
+        } // if
+
+        int text = QInputDialog::getInt(this, "輸入",
+                             "定時幾毫秒做一次:", QLineEdit::Normal, 1, 2147400000, 1, &isOK);
+        if ( !isOK ) return;
+        QString changedTxt = "Execute per " + QString::number(text) + " ms {\n" + selectedTxt + "\n}";
+        ui->textEdit->textCursor().insertText(changedTxt);
+    } // else if
+    else if ( strSelect.compare( "條件啟動(圈選!勿包在重複做裡!)" ) == 0 ) // 當按下 左箭頭 時執行,按下 右箭頭  時結束 {
+    {
+        QTextCursor cursor(ui->textEdit->textCursor());
+        QString selectedTxt =  cursor.selectedText();
+        if ( selectedTxt.size() <= 0 ) {
+            QMessageBox::critical(this, tr("Error"),
+                "請圈選指令");
+            return;
+        } // if
+
+        QString txtStart = "", txtEnd = "";
+
+        while ( true ) {
+            txtStart = QInputDialog::getText(this, "輸入",
+                              "開始的熱鍵:",
+                               QLineEdit::Normal, "", &isOK);
+            if ( !isOK ) return;
+            if ( this->m_autoBot->isKeyExsit(txtStart) )
+                break;
+            else
+                QMessageBox::critical(this, tr("Error"),
+                    "此鍵不存在");
+        } // while
+
+        while ( true ) {
+            txtEnd = QInputDialog::getText(this, "輸入",
+                              "結束的熱鍵:",
+                               QLineEdit::Normal, "", &isOK);
+            if ( !isOK ) return;
+            if ( this->m_autoBot->isKeyExsit(txtEnd) )
+                break;
+            else
+                QMessageBox::critical(this, tr("Error"),
+                    "此鍵不存在");
+        } // while
+
+        QString changedTxt = "當按下 " + txtStart + " 時執行,按下 " + txtEnd + " 時結束 {\n" + selectedTxt + "\n}";
+        ui->textEdit->textCursor().insertText(changedTxt);
+    } // else if
+    else if ( strSelect.compare( "延遲...毫秒" ) == 0 )
+    {
+        int text = QInputDialog::getInt(this, "輸入",
+                                        "輸入延遲時間(毫秒):", QLineEdit::Normal, 1, 2147400000, 1, &isOK);
+        if ( !isOK ) return;
+        insertTxtToTxtEdit("延遲 " + QString::number(text) + " 毫秒");
+    } // else if
+    else if ( strSelect.compare( "按鍵(字母、數字)" ) == 0)
+    {
+        QMessageBox::information(this, tr("Warning"), tr("請用滑鼠右鍵點擊"));
+    }
+
+    else if ( strSelect.compare( "滑鼠" ) == 0 )
+    {
+        QMessageBox::information(this, tr("Warning"), tr("請用滑鼠右鍵點擊"));
+    } // else if
+    else
+    {
+        QMessageBox::information(this, "Error",
+            strSelect);
+        return;
+    } // else
+
+    //qDebug() << text;
+    /*if(isOK) {
+        QMessageBox::information(parent, "Information",
+                "Your comment is: <b>" + text + "</b>",
+                QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes);
+    }*/
+}
+//滑鼠在條件執行中出錯
+void MainWindow::deselectedAllText()
+{
+    QTextCursor c = ui->textEdit->textCursor();
+    c.setPosition(0);
+    c.setPosition(ui->textEdit->toPlainText().size(), QTextCursor::KeepAnchor);
+    ui->textEdit->setTextCursor(c);
+    ui->textEdit->setTextBackgroundColor(QColor(255, 255, 255));
+}
+
+void MainWindow::on_startButton_clicked()
+{
+    deselectedAllText();
+    //ui->textEdit->setTextBackgroundColor(QColor(0, 0, 0)); ui->textEdit->toPlainText()
+    QString content = ui->textEdit->toPlainText();
+    if ( m_isCompressFile )
+    {
+        qDebug() << "is compress file";
+        Huffman_Management hm( m_currentFileName, "", m_login.m_user, "" );
+        hm.decompressFile();
+        content = hm.getResult();
+        qDebug () << content;
+    } // if
+
+    if ( content.isEmpty() ) return ;
+    if ( !this->m_autoBot->readDataFromTxtEdit(content.split("\n")) )
+    {
+
+        QMessageBox::critical(this, tr("Error"), tr("腳本錯誤"));
+        return;
+    } // if
+
+    QMessageBox::information(this, tr("Warning"), tr("按下F1後開始/長按F2結束"));
+    this->m_autoBot->start();
+    this->ui->startButton->setEnabled(false);
+    this->ui->startButton->setEnabled(false);
+    this->ui->loadButton->setEnabled(false);
+    this->ui->saveButton->setEnabled(false);
+    this->ui->newButton->setEnabled(false);
+    this->ui->lockButton->setEnabled(false);
+}
+
+void MainWindow::insertTxtToTxtEdit( QString str )
+{
+    QTextCursor cursor(ui->textEdit->textCursor());
+    if ( cursor.position() != 0 && ui->textEdit->toPlainText()[cursor.position()-1] != '\n' )
+        cursor.insertText( "\n" );
+
+    char c = ' ';
+    if ( cursor.position() < ui->textEdit->toPlainText().size() )
+         c = ui->textEdit->toPlainText()[cursor.position()].toLatin1();
+    cursor.insertText( str );
+    //qDebug() << "->>>>"  << c;
+    if ( c == ' ' || c == '\n' || c == '\r' || c == '\t'  )
+        return;
+
+    cursor.insertText( "\n" );
+    //if (cursor.position() == 0)
+    //    cursor.insertText( "\n" );
+}
+
+void MainWindow::on_deleteButton_clicked()
+{
+    QModelIndexList list = ui->vKeyView->selectionModel()->selectedIndexes();
+    if ( list.size() > 0 )
+    {
+        //qDebug() << list[0].data().toString();
+        this->m_autoBot->removeVirtualKey2Table(list.at(0).data().toString());
+        m_vKeyModel->removeRow(list.at(0).row());
+        ui->vKeyView->setUpdatesEnabled(true);
+
+        //this->m_vKeyModel->searchRemove(list[0].data().toString());
+    } // if
+}
+
+#include <QNetworkAccessManager>
+#include<QNetworkRequest>
+#include <QNetworkReply>
+#include <QUrl>
+void MainWindow::on_pushButton_clicked()
+{
+
+
+
+}
+
+void MainWindow::on_vKeyView_customContextMenuRequested(const QPoint &pos)
+{
+    QModelIndex it = ui->vKeyView->indexAt(pos);
+    if ( it.row() == -1 ) return;
+    //qDebug() << it.row();
+    QVariant vV = it.model()->index( it.row(),  0, it.parent()).data() ;
+    Global.selectedSpecialKey = vV.toString();
+    QMenu *popMenu =new QMenu(this);
+    popMenu->addAction(ui->action_Click);
+    popMenu->addAction(ui->action_Press);
+    popMenu->addAction(ui->action_Release);
+    popMenu->exec(QCursor::pos());
+}
+
+void MainWindow::on_action_Press_triggered()
+{
+    insertTxtToTxtEdit("按下 " + Global.selectedSpecialKey + " 鍵");
+}
+
+void MainWindow::on_action_Release_triggered()
+{
+    insertTxtToTxtEdit("放開 " + Global.selectedSpecialKey + " 鍵");
+}
+
+void MainWindow::on_action_Click_triggered()
+{
+    insertTxtToTxtEdit("點擊 " + Global.selectedSpecialKey + " 鍵");
+}
+
+void MainWindow::on_label_linkActivated(const QString &link)
+{
+    QDesktopServices::openUrl(QUrl(link));
+}
+
+void MainWindow::on_addButton_clicked()
+{
+    bool isOK;
+        QString text = QInputDialog::getMultiLineText(this, tr("輸入"),
+                                                         tr("依序輸入按鍵名稱、鍵值(以換行區隔):"), "", &isOK);
+        if ( !isOK ) return;
+        QStringList sList = text.split("\n");
+        if (sList.at(sList.size()-1).size() == 0)
+            sList.removeAt(sList.size()-1);
+        if ( sList.size() % 2 != 0 || sList.size() == 0 )
+        {
+            QMessageBox::information(this, tr("Error"),
+                "格式錯誤");
+            return;
+        } // if
+
+
+        if ( !this->m_autoBot->addVirtualKey2Table(sList))
+        {
+            QMessageBox::information(this, tr("Error"),
+                "autoBot.key遺失");
+            return ;
+        } // if
+
+        for ( int i = 0; i < sList.size(); i+=2 )
+        {
+            if (!this->m_vKeyModel->insertRow(  m_vKeyModel->rowCount(), QModelIndex() ))
+                return;
+            m_vKeyModel->setData( m_vKeyModel->index( m_vKeyModel->rowCount() - 1,0), QVariant(sList[i]));
+        } // for
+}
+
+void MainWindow::on_lineEdit_textChanged(const QString &arg1)
+{
+    this->ui->vKeyView->model()->removeRows(0,this->ui->vKeyView->model()->rowCount() );
+    for ( auto m : m_autoBot->m_virKeyList)
+    {
+        if ( m.keyName.indexOf( arg1 ) != -1 )
+        {
+            m_vKeyModel->insertRow(  m_vKeyModel->rowCount(), QModelIndex() );
+            m_vKeyModel->setData( m_vKeyModel->index( m_vKeyModel->rowCount() - 1,0), QVariant(m.keyName));
+            //qDebug() << m.keyName;
+        } // if
+    } // for
+}
+
+void MainWindow::on_toolView_customContextMenuRequested(const QPoint &pos)
+{
+    //"重複做...次(圈選)" << "定時(圈選!勿包在重複做裡!)" << "延遲...毫秒" << "按鍵(字母、數字)" << "移動滑鼠X軸(勿包在重複做裡!)" << "移動滑鼠Y軸(勿包在重複做裡!)"<< "停止滑鼠";
+
+    QModelIndex it = ui->toolView->indexAt(pos);
+    //qDebug() << it.row();
+    if ( it.row() == -1 ) return;
+    if ( it.row() == 4 )
+    {
+        QVariant vV = it.model()->index( it.row(),  0, it.parent()).data() ;
+        Global.selectedSpecialKey = vV.toString();
+        QMenu *popMenu =new QMenu(this);
+        popMenu->addAction(ui->action_keyboard_Click);
+        popMenu->addAction(ui->action_keyboard_Press);
+        popMenu->addAction(ui->action_keyboard_Release);
+        popMenu->exec(QCursor::pos());
+    } // if
+    else if ( it.row() == 5 )
+    {
+        QVariant vV = it.model()->index( it.row(),  0, it.parent()).data() ;
+        Global.selectedSpecialKey = vV.toString();
+        QMenu *popMenu =new QMenu(this);
+        popMenu->addAction(ui->action_LClickPos);
+        popMenu->addAction(ui->action_MouseMoveX);
+        popMenu->addAction(ui->action_MouseMoveY);
+        popMenu->addAction(ui->action_MouseStop);
+        popMenu->exec(QCursor::pos());
+    } // if
+}
+
+void MainWindow::on_action_keyboard_Click_triggered()
+{
+    bool isOK;
+    QString text = QInputDialog::getText(this, "輸入",
+                          "點擊的按鍵:",
+                           QLineEdit::Normal, "", &isOK);
+    if ( !isOK ) return;
+    if ( !this->m_autoBot->isKeyExsit(text) )
+    {
+        QMessageBox::information(this, tr("Error"),
+            "尚為增加此按鍵");
+        return ;
+    } // if
+
+    insertTxtToTxtEdit("點擊 " + text + " 鍵");
+}
+
+void MainWindow::on_action_keyboard_Press_triggered()
+{
+    bool isOK;
+    QString text = QInputDialog::getText(this, "輸入",
+                          "按下的按鍵:",
+                           QLineEdit::Normal, "", &isOK);
+    if ( !isOK ) return;
+    if ( !this->m_autoBot->isKeyExsit(text) )
+    {
+        QMessageBox::information(this, tr("Error"),
+            "尚為增加此按鍵");
+        return ;
+    } // if
+
+    insertTxtToTxtEdit("按下 " + text + " 鍵");
+}
+
+void MainWindow::on_action_keyboard_Release_triggered()
+{
+    bool isOK;
+    QString text = QInputDialog::getText(this, "輸入",
+                          "放開的按鍵:",
+                           QLineEdit::Normal, "", &isOK);
+    if ( !isOK ) return;
+    if ( !this->m_autoBot->isKeyExsit(text) )
+    {
+        QMessageBox::information(this, tr("Error"),
+            "尚為增加此按鍵");
+        return ;
+    } // if
+
+    insertTxtToTxtEdit("放開 " + text + " 鍵");
+}
+
+void MainWindow::on_action_MouseMoveX_triggered()
+{
+    bool isOK;
+    int iStart = QInputDialog::getInt(this, "輸入",
+                                      "起始位置(依解析度)", QLineEdit::Normal, 1, 2147400000, 1, &isOK);
+    if ( !isOK ) return;
+    int iEnd = QInputDialog::getInt(this, "輸入",
+                                    "結束位置(依解析度)", QLineEdit::Normal, 1, 2147400000, 1, &isOK);
+    if ( !isOK ) return;
+    int iPer = QInputDialog::getInt(this, "輸入",
+                                    "毫秒/畫素(標準輸:10)", QLineEdit::Normal, 1, 2147400000, 1, &isOK);
+    if ( !isOK ) return;
+    insertTxtToTxtEdit("MouseMoveX " + QString::number(iStart) + " " + QString::number(iEnd) + " " + QString::number(iPer) );
+}
+
+void MainWindow::on_action_MouseMoveY_triggered()
+{
+    bool isOK;
+    int iStart = QInputDialog::getInt(this, "輸入",
+                                      "起始位置(依解析度)", QLineEdit::Normal, 1, 2147400000, 1, &isOK);
+    if ( !isOK ) return;
+    int iEnd = QInputDialog::getInt(this, "輸入",
+                                    "結束位置(依解析度)", QLineEdit::Normal, 1, 2147400000, 1, &isOK);
+    if ( !isOK ) return;
+    int iPer = QInputDialog::getInt(this, "輸入",
+                                    "毫秒/畫素(標準輸:10)", QLineEdit::Normal, 1, 2147400000, 1, &isOK);
+    if ( !isOK ) return;
+    insertTxtToTxtEdit("MouseMo  veY " + QString::number(iStart) + " " + QString::number(iEnd) + " " + QString::number(iPer) );
+}
+
+void MainWindow::on_action_MouseStop_triggered()
+{
+    insertTxtToTxtEdit("MouseStopXY" );
+}
+
+void MainWindow::on_action_LClickPos_triggered()
+{
+    bool isOK = true;
+   /* int iX = QInputDialog::getInt(this, "輸入",
+                                      "起始位置(依解析度)", QLineEdit::Normal, 1, 2147400000, 1, &isOK);
+    if ( !isOK ) return;
+    int iY = QInputDialog::getInt(this, "輸入",
+                                    "結束位置(依解析度)", QLineEdit::Normal, 1, 2147400000, 1, &isOK);*/
+    int x = 0, y = 0;
+    QuestDialog dd( &x, &y, this );
+    //QMessageBox::information(this, tr("!!!!!"), "對目標處點擊右鍵，確認目標後再點擊確定");
+    if (  dd.exec() ) //return;
+        insertTxtToTxtEdit("左鍵點擊 " + QString::number(x) + " " + QString::number(y) );
+}
+
+void MainWindow::on_textEdit_textChanged()
+{
+    //qDebug() << "Not compress file";
+    //if ( m_isCompressFile &&  )
+    //m_isCompressFile = false;
+}
+
+void MainWindow::on_newButton_clicked()
+{
+    ui->textEdit->setText("");
+    ui->textEdit->setEnabled(true);
+    m_isCompressFile = false;
+    m_currentFileName = "";
+    deselectedAllText();
+}
+
+void MainWindow::on_lockButton_clicked()
+{
+    //on_saveButton_clicked();
+    QString content = ui->textEdit->toPlainText();
+    if ( content.isEmpty() ) return;
+    if ( !this->m_autoBot->readDataFromTxtEdit(content.split("\n")) )
+    {
+        QMessageBox::critical(this, tr("Error"), tr("腳本錯誤"));
+        return;
+    } // if
+
+    QString fileName = QFileDialog::getSaveFileName(this,
+           tr("儲存加密腳本"), "",
+           tr("加密腳本 (*.botx)"));
+    if (fileName.isEmpty())
+        return;
+
+    QFile file(fileName);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        QMessageBox::information(this, tr("無法儲存檔案"),
+            file.errorString());
+        return;
+    } // if
+
+    QFile tmp( "tmp.lock" );
+    if (!tmp.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        QMessageBox::information(this, tr("加密出錯"),
+            tmp.errorString());
+        return;
+    } // if
+    m_autoBot->saveData(&tmp);
+
+    m_currentFileName = fileName;
+    //qDebug() << m_currentFileName.toLatin1();
+
+    bool isOK;
+    QString text = QInputDialog::getText(this, "輸入",
+                          "加密對象名稱:",
+                           QLineEdit::Normal, "", &isOK);
+    if ( !isOK ) return;
+    Huffman_Management hm( "tmp.lock", m_currentFileName, text, content );
+    qDebug() << hm.compressFile();
+    DeleteFileA("tmp.lock");
+    QMessageBox::information(this, tr("Success"),
+        "加密成功");
+    //qDebug() << hm.getResult();
+}
